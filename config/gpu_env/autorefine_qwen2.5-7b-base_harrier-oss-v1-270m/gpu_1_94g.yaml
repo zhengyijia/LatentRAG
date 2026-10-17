@@ -1,0 +1,11 @@
+num_gpus: 1
+
+vllm:
+  # vllm settings on one NVIDIA H100 94GB GPU
+  use_vllm: true
+  qa_model_gpu_memory_utilization: 0.58
+  qa_model_max_model_len: 12000
+  qa_model_max_num_seqs: 60
+
+data:
+  batch_size: -1

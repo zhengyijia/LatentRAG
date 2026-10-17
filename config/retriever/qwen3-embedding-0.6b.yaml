@@ -1,0 +1,27 @@
+retriever_tag: "qwen3-embedding-0.6b"
+encoder_name_or_path: "Qwen/Qwen3-Embedding-0.6B" # official path
+custom_encoder_name_or_path: null # if not null, use this path to load the encoder
+tokenizer_name_or_path: null
+custom_tokenizer_name_or_path: null # if not null, use this path to load the tokenizer
+encoder_query_max_length: 256
+use_fp16: true
+top_k: 3
+retrieval_batch_size: 128
+corpus_path: "data/corpus"
+corpus_file: "wiki18_100w.jsonl"
+corpus_index_folder: "wiki18_100w_qwen3-embedding-0.6b_fp16_shard"
+faiss_gpu: true
+attn_implementation: "flash_attention_2"
+dropout: 0
+
+encoder_trainable: false
+encoder_lora:
+  use_lora: false
+  lora_name_or_path: null
+  lora_r: 16
+  lora_alpha: 64
+  lora_dropout: 0
+  lora_target_modules: "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
+  use_rslora: false
+
+share_encoder: true # if true, reference encoder shares weights with encoder

@@ -1,0 +1,27 @@
+retriever_tag: "e5-base-v2"
+encoder_name_or_path: "intfloat/e5-base-v2" # official path
+custom_encoder_name_or_path: null # if not null, use this path to load the encoder
+tokenizer_name_or_path: null
+custom_tokenizer_name_or_path: null # if not null, use this path to load the tokenizer
+encoder_query_max_length: 256
+use_fp16: true
+top_k: 3
+retrieval_batch_size: 512
+corpus_path: "data/corpus"
+corpus_file: "wiki18_100w.jsonl"
+corpus_index_folder: "wiki18_100w_e5-base-v2_fp16_shard"
+faiss_gpu: true
+attn_implementation: "sdpa"
+dropout: 0
+
+encoder_trainable: false
+encoder_lora:
+  use_lora: false
+  lora_name_or_path: null
+  lora_r: 16
+  lora_alpha: 64
+  lora_dropout: 0
+  lora_target_modules: "query,key,value,dense"
+  use_rslora: false
+
+share_encoder: true # if true, reference encoder shares weights with encoder

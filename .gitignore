@@ -1,0 +1,17 @@
+**/.ipynb_checkpoints/
+**/__pycache__/
+**/.cache/
+/data/
+/trainer_output/
+/embeddings/
+/evaluation_output/
+/evaluation_based_on_reasoning_steps_output/
+/evaluation_based_on_reasoning_steps_chunks_output/
+/analysis_output/
+/figs/
+/wandb/
+/outputs/
+.vscode/
+.DS_Store
+*.log*
+

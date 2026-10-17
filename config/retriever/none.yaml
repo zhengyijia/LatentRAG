@@ -1,0 +1,6 @@
+retriever_tag: "none"
+encoder_name_or_path: "none"
+custom_encoder_name_or_path: null # if not null, use this path to load the encoder
+tokenizer_name_or_path: null
+custom_tokenizer_name_or_path: null # if not null, use this path to load the tokenizer
+top_k: 0

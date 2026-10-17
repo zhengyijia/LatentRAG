@@ -1,0 +1,42 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://./config/gpu_env
+    - file://./config/retriever
+
+defaults:
+  - gpu_env: default
+  - retriever: none
+  - override hydra/hydra_logging: none
+  - override hydra/job_logging: console_logging
+  - _self_
+
+model:
+  # model arguments
+  model_tag: "Few-Shot-RAG-CoT_Qwen2.5-3B"
+  model_class: "Few-Shot-RAG-CoT"
+  model_name_or_path: "Qwen/Qwen2.5-3B-Instruct"
+  attn_implementation: "flash_attention_2"
+  use_cache: true
+  use_chat_template: true
+  max_turns: 4
+  max_retrieved_docs: 12  # no limitation
+  max_gen_tokens: 512
+
+data:
+  few_shot_prompt_name: "hotpotqa"
+  batch_size: ${gpu_env.data.batch_size}
+
+training:
+  # training arguments
+  bf16: true
+  seed: 42
+  overwrite_output_dir: true
+
+vllm:
+  use_vllm: ${gpu_env.vllm.use_vllm}
+  qa_model_gpu_memory_utilization: ${gpu_env.vllm.qa_model_gpu_memory_utilization}
+  qa_model_max_model_len: ${gpu_env.vllm.qa_model_max_model_len}
+  qa_model_max_num_seqs: ${gpu_env.vllm.qa_model_max_num_seqs}

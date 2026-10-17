@@ -1,0 +1,384 @@
+import os
+import re
+import logging
+import time
+import torch
+import torch.nn as nn
+from copy import deepcopy
+from typing import Dict, Optional, List
+from transformers import PreTrainedTokenizer
+from transformers import StoppingCriteriaList, StoppingCriteria
+
+from llm_tools.vllm_offline import VLLMOffline
+from model.infer_inputs_outputs import IterationRecord
+from llm_tools.safe_loader import AutoModelForCausalLMSafeLoader, AutoTokenizerSafeLoader
+
+logger = logging.getLogger(__name__)
+
+
+# Define the custom stopping criterion
+class StopOnSequence(StoppingCriteria):
+    def __init__(self, target_sequences, tokenizer):
+        # Encode the string so we have the exact token-IDs pattern
+        self.target_ids = [tokenizer.encode(target_sequence, add_special_tokens=False) for target_sequence in target_sequences]
+        self.target_lengths = [len(target_id) for target_id in self.target_ids]
+        self._tokenizer = tokenizer
+
+    def __call__(self, input_ids, scores, **kwargs):
+        batch_size = input_ids.shape[0]
+        device = input_ids.device
+
+        targets = [torch.tensor(t, device=device) for t in self.target_ids]
+
+        stop_flags = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        for b in range(batch_size):
+            seq = input_ids[b]
+            for target, target_len in zip(targets, self.target_lengths):
+                if seq.shape[0] >= target_len and torch.equal(seq[-target_len:], target):
+                    stop_flags[b] = True
+                    break
+        return stop_flags
+    
+def get_subquery(text):
+    pattern = re.compile(r"<search>(.*?)</search>", re.DOTALL)
+    matches = pattern.findall(text)
+    if matches:
+        return matches[-1].strip()
+    else:
+        return None
+    
+def get_thoughts(text):
+    pattern = re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL)
+    matches = pattern.findall(text)
+    matches = [item.strip() for item in matches]
+    if matches and len(matches) > 0:
+        # save all thoughts (sometimes the model generates multiple <think></think> thoughts)
+        return matches
+    else:
+        return None
+    
+def get_conclusions(text):
+    pattern = re.compile(r"<conclusion>(.*?)</conclusion>", re.DOTALL)
+    matches = pattern.findall(text)
+    matches = [item.strip() for item in matches]
+    if matches and len(matches) > 0:
+        # save all conclusions (sometimes the model generates multiple <think></think> thoughts)
+        return matches
+    else:
+        return None
+    
+def get_answer(text):
+    pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+    matches = pattern.findall(text)
+    if matches:
+        return matches[-1].strip()
+    else:
+        return None
+    
+def process_chunk_texts(texts, title_in_first_line=True): 
+    format_reference = ''
+    for idx, text in enumerate(texts):
+        if title_in_first_line:
+            title = text.split("\n")[0]
+            text = "\n".join(text.split("\n")[1:])
+            format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
+        else:
+            format_reference += f"[Doc {idx+1}]\n{text}\n"
+
+    return format_reference
+
+
+def load_tokenizer(tokenizer_name_or_path):
+    tokenizer = AutoTokenizerSafeLoader.from_pretrained(
+        tokenizer_name_or_path,
+        use_fast=True
+    )
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    if tokenizer.bos_token is None:
+        tokenizer.bos_token = ''
+    tokenizer.padding_side = 'left'
+
+    return tokenizer
+
+class HipRAG(nn.Module):
+    def __init__(self,
+                 base_model: VLLMOffline,
+                 tokenizer: PreTrainedTokenizer,
+                 max_turns: int,
+                 use_chat_template: bool,
+                 max_gen_tokens: int,
+                 use_vllm: bool,
+                 config):
+        super().__init__()
+        self.base_model = base_model
+        self.tokenizer = tokenizer
+        self.max_turns = max_turns
+        self.use_chat_template = use_chat_template
+        self.max_gen_tokens = max_gen_tokens
+        self.use_vllm = use_vllm
+        self.config = config
+        
+        self.title_in_first_line = getattr(self.config.data, 'title_in_first_line', True)
+        
+        # Assume that after </answer> is always the eos token, so do not add a answer stopping criteria
+        if not use_vllm:
+            # Initialize the stopping criteria
+            search_target_sequences = ["</search>", " </search>", "</search>\n", " </search>\n", "</search>\n\n", " </search>\n\n"]
+            answer_target_sequences = ["</answer>", " </answer>", "</answer>\n", " </answer>\n"]
+            stop_sequences = search_target_sequences + answer_target_sequences
+            self.stopping_criteria = StoppingCriteriaList([StopOnSequence(stop_sequences, tokenizer)])
+            conclusion_target_sequences = ["</conclusion>", " </conclusion>", "</conclusion>\n", " </conclusion>\n"]
+            self.conclusion_stopping_criteria = StoppingCriteriaList([StopOnSequence(conclusion_target_sequences, tokenizer)])
+        else: 
+            self.stopping_sequences = ["</search>", "</answer>"]
+            self.conclusion_stopping_sequences = ["</conclusion>"]
+            
+    def reset_prefix_cache(self):
+        if self.use_vllm:
+            self.base_model.reset_prefix_cache()
+
+    @torch.inference_mode()
+    def _text_generation(self, all_prompts, stopping_criteria=None):
+        metadata = {'num_request': len(all_prompts)}
+        
+        input_batch = self.tokenizer(
+            all_prompts,
+            add_special_tokens=False,
+            return_attention_mask=True,
+            padding=True,
+            truncation=False,
+            return_tensors="pt"
+        ).to(self.base_model.device)
+        metadata['prompt_tokens'] = (input_batch['input_ids'] != self.tokenizer.pad_token_id).sum().item()
+
+        outputs = self.base_model.generate(
+            **input_batch,
+            max_new_tokens=self.max_gen_tokens,
+            do_sample=False,
+            use_cache=True,
+            eos_token_id=self.tokenizer.eos_token_id,
+            stopping_criteria=stopping_criteria,
+            pad_token_id=self.tokenizer.pad_token_id,
+            temperature=None, top_p=None, top_k=None,
+        )
+
+        outputs = outputs[:, input_batch['input_ids'].shape[1]:]  # Remove the input part
+        metadata['completion_tokens'] = (outputs != self.tokenizer.pad_token_id).sum().item()
+        all_responses = [self.tokenizer.decode(out, skip_special_tokens=True) for out in outputs]
+        
+        return all_responses, metadata
+
+    def _text_generation_vllm(self, all_prompts, stopping_sequences=None):
+        all_responses, metadata = self.base_model.batch_infer_with_prompt_texts(
+            all_prompts, max_tokens=self.max_gen_tokens, stopping_sequences=stopping_sequences)
+
+        return all_responses, metadata
+
+    def batch_generate(self, infer_inputs: List[IterationRecord]) -> List[IterationRecord]:
+        start_time = time.perf_counter()
+        
+        batch_size = len(infer_inputs)
+        cur_turn = len(infer_inputs[0].chunk_items)
+        logger.info(f"Current turn: {cur_turn}, batch size: {batch_size}")
+
+        past_prompts = None
+        if 'past_prompt' in infer_inputs[0].states:
+            past_prompts = [item.states['past_prompt'] for item in infer_inputs]
+
+        if past_prompts is None:
+            # not initial retrieval
+            assert not any(item.chunk_items for item in infer_inputs), "HipRAG should not have any retrieved chunks in the first turn."
+            
+            # Initial prompt
+            prompt = ("Answer user questions by thinking step-by-step. Your entire reasoning process must be encapsulated within a single <think></think> block, which contains one or more <step></step> blocks. Each step must begin with your analysis in <reasoning>. If you identify a knowledge gap, you may use <search>query</search> to query a search engine; search results will then be provided in a <context> tag. Every step must end with a <conclusion> summarizing what you learned in that step. After your thinking process is complete, provide the final, conclusive answer inside an <answer> tag placed immediately after the closing </think> tag. You can use as many steps as you need. Ensure all XML tags are properly formed and nested.\n\n"
+                      "**## Output Format Specification**\n\n"
+                      "Your output must follow this overall structure. The `<think>` block contains all the steps, and the `<answer>` block follows it.\n\n"
+                      "<think>\n"
+                      "<step>\n"
+                      "    ...\n"
+                      "</step>\n"
+                      "<step>\n"
+                      "    ...\n"
+                      "</step>\n"
+                      "</think>\n"
+                      "<answer>Your final, conclusive answer to the user's question.</answer>\n\n"
+                      "**## Step Formats (to be used inside <think>)**\n\n"
+                      "Format 1: Step with a Search\n\n"
+                      "<step>\n"
+                      "    <reasoning>Your detailed analysis of what you know and what you need to find out.</reasoning>\n"
+                      "    <search>The precise search query you will use.</search>\n"
+                      "    <context>[This will be provided by the system after your search]</context>\n"
+                      "    <conclusion>Your conclusion or answer to the reasoning and search query at this step.</conclusion>\n"
+                      "</step>\n\n"
+                      "Format 2: Step without a Search (Internal Reasoning)\n\n"
+                      "<step>\n"
+                      "    <reasoning>Your detailed analysis of what you know and what you need to find out.</reasoning>\n"
+                      "    <conclusion>Your conclusion or answer to the reasoning at this step.</conclusion>\n"
+                      "</step>\n\n"
+                      "User Question: {question}")
+            all_prompts = [prompt.format(question=item.query) for item in infer_inputs]
+            if self.use_chat_template:
+                all_prompts = self.tokenizer.apply_chat_template(
+                    [[{"role": "user", "content": p}] for p in all_prompts], 
+                    add_generation_prompt=True, tokenize=False)
+            think_step_reasoning = "\n<think>\n<step>\n    <reasoning>"
+            all_prompts = [prompt + think_step_reasoning for prompt in all_prompts]
+        else:
+            all_prompts = past_prompts
+            search_texts = [
+                process_chunk_texts([chunk_item.text for chunk_item in item.chunk_items[-1]], 
+                                    title_in_first_line=self.title_in_first_line) for item in infer_inputs
+            ]
+            curr_search_template = '\n    <context>{search_results}</context>\n    <conclusion>'
+            search_texts = [curr_search_template.format(search_results=text) for text in search_texts]
+            
+            all_prompts = [prompt + search_text for prompt, search_text in zip(all_prompts, search_texts)]
+
+        if self.use_vllm:
+            all_responses, metadata = self._text_generation_vllm(all_prompts, self.stopping_sequences)
+        else: 
+            all_responses, metadata = self._text_generation(all_prompts, self.stopping_criteria)
+
+        if os.getenv("DEBUG_MODE", "false").lower() == "true":
+            all_record_responses = [[out] for out in all_responses]
+
+        # # remove additional tokens
+        # all_responses = [out.split("</search>")[0] + "</search>" if "</search>" in out else out
+        #                    for out in all_responses]
+        # all_responses = [out.split("</answer>")[0] + "</answer>" if "</answer>" in out else out
+        #                    for out in all_responses]
+
+        past_prompts = [prompt + output for prompt, output in zip(all_prompts, all_responses)]
+        
+        # add additional tokens
+        all_update_responses = []
+        for prompt, response in zip(all_prompts, all_responses):
+            if prompt.endswith("<reasoning>"):
+                response = "<reasoning>" + response
+            elif prompt.endswith("<conclusion>"):
+                response = "<conclusion>" + response
+            all_update_responses.append(response)
+        all_responses = all_update_responses
+        
+        all_new_conclusions = [get_conclusions(output) for output in all_responses]
+        all_new_thoughts = [get_thoughts(output) for output in all_responses]
+        all_answers = [get_answer(output) for output in all_responses]
+        # if an answer is provided, then no additional subqueries
+        all_new_subqueries = [get_subquery(output) if all_answers[i] is None else None for i, output in enumerate(all_responses)]
+        # if no additional subquery is provided and no answer, then set the answer to "" (fail)
+        all_answers = ["" if ans is None and all_new_subqueries[i] is None else ans for i, ans in enumerate(all_answers)]
+        all_force_answer_flags = [False for _ in range(batch_size)]
+        
+        force_answer = cur_turn >= self.max_turns
+        if force_answer:
+            unfinished_prompts = {i: past_prompts[i] for i, ans in enumerate(all_answers) if ans is None or ans == ""}
+            if len(unfinished_prompts) > 0:
+                for i in unfinished_prompts:
+                    if unfinished_prompts[i].endswith("</search>"):
+                        unfinished_prompts[i] = unfinished_prompts[i].rsplit("<search>", 1)[0]
+                    # force answer
+                    unfinished_prompts[i] += "<conclusion>"
+                    
+                if self.use_vllm:
+                    unfinished_conclusion_all_responses, unfinished_conclusion_metadata = self._text_generation_vllm(list(unfinished_prompts.values()), self.conclusion_stopping_sequences)
+                else:
+                    unfinished_conclusion_all_responses, unfinished_conclusion_metadata = self._text_generation(list(unfinished_prompts.values()), self.conclusion_stopping_criteria)
+
+                for i in unfinished_prompts.keys():
+                    unfinished_prompts[i] += unfinished_conclusion_all_responses[i]
+                    unfinished_prompts[i] += '</step>\n</think>\n<answer>'
+                    
+                metadata['num_request'] += unfinished_conclusion_metadata['num_request']
+                metadata['prompt_tokens'] += unfinished_conclusion_metadata['prompt_tokens']
+                metadata['completion_tokens'] += unfinished_conclusion_metadata['completion_tokens']
+
+                if self.use_vllm:
+                    unfinished_all_responses, unfinished_metadata = self._text_generation_vllm(list(unfinished_prompts.values()))
+                else:
+                    unfinished_all_responses, unfinished_metadata = self._text_generation(list(unfinished_prompts.values()))
+                
+                if os.getenv("DEBUG_MODE", "false").lower() == "true":
+                    unfinished_all_record_responses = [[out] for out in unfinished_all_responses]
+                
+                unfinished_all_responses = ["<answer>" + out for out in unfinished_all_responses]
+                unfinished_all_responses = [out.split("</answer>")[0] + "</answer>" if "</answer>" in out else out
+                                            for out in unfinished_all_responses]
+                unfinished_all_answers = [get_answer(output) for output in unfinished_all_responses]
+                # force finish
+                unfinished_all_answers = [ans if ans is not None else "" for ans in unfinished_all_answers]
+
+                for cur_idx, global_idx in enumerate(unfinished_prompts.keys()):
+                    all_answers[global_idx] = unfinished_all_answers[cur_idx]
+                    all_new_subqueries[global_idx] = None
+                    past_prompts[global_idx] = unfinished_prompts[global_idx].removesuffix("<answer>") + unfinished_all_responses[cur_idx]
+                    all_force_answer_flags[global_idx] = True
+                    if os.getenv("DEBUG_MODE", "false").lower() == "true":
+                        all_record_responses[global_idx].extend(unfinished_all_record_responses[cur_idx])
+
+                metadata['num_request'] += unfinished_metadata['num_request']
+                metadata['prompt_tokens'] += unfinished_metadata['prompt_tokens']
+                metadata['completion_tokens'] += unfinished_metadata['completion_tokens']
+
+        infer_outputs = deepcopy(infer_inputs)
+        for i, item in enumerate(infer_outputs):
+            if getattr(item.extra_info, "refinement", None) is None:
+                item.extra_info['refinement'] = []
+            item.extra_info['refinement'].append(all_new_conclusions[i])
+            item.thoughts.append(all_new_thoughts[i])
+            item.subqueries.append(all_new_subqueries[i])
+            item.answer = all_answers[i]
+            item.force_answer = all_force_answer_flags[i]
+            
+            if os.getenv("DEBUG_MODE", "false").lower() == "true":
+                record_responses = item.states.get("record_responses", [])
+                record_responses.extend(all_record_responses[i])
+            
+            if item.answer is None:
+                item.states = {"past_prompt": past_prompts[i]}
+            else:
+                item.states = {}
+                
+            if os.getenv("DEBUG_MODE", "false").lower() == "true":
+                item.states["record_responses"] = record_responses
+
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        avg_time = total_time / batch_size
+        for item in infer_outputs:
+            item.infer_time_each_steps.append(total_time)
+
+        return infer_outputs, metadata
+
+    @classmethod
+    def load(cls, config):
+        torch_dtype = torch.float32
+        if getattr(config.training, 'bf16', False): 
+            torch_dtype = torch.bfloat16
+        elif getattr(config.training, 'fp16', False):
+            torch_dtype = torch.float16
+        
+        tokenizer = load_tokenizer(tokenizer_name_or_path=config.model.model_name_or_path)
+        if config.vllm.use_vllm:
+            base_model = VLLMOffline(config.model.model_name_or_path, seed=config.training.seed, 
+                                     gpu_memory_utilization=config.vllm.qa_model_gpu_memory_utilization,
+                                     max_model_len=config.vllm.qa_model_max_model_len,
+                                     max_num_seqs=config.vllm.qa_model_max_num_seqs,
+                                     dtype=torch_dtype)
+        else:
+            base_model = AutoModelForCausalLMSafeLoader.from_pretrained(config.model.model_name_or_path, 
+                                                                        torch_dtype=torch_dtype, 
+                                                                        device_map="auto",
+                                                                        attn_implementation=config.model.attn_implementation)
+        
+        model = cls(
+            base_model=base_model,
+            tokenizer=tokenizer,
+            max_turns=config.model.max_turns,
+            use_chat_template=config.model.use_chat_template,
+            max_gen_tokens=config.model.max_gen_tokens, 
+            use_vllm=config.vllm.use_vllm,
+            config=config
+        )
+
+        return model

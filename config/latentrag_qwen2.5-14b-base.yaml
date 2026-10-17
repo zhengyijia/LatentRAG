@@ -1,0 +1,118 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://./config/gpu_env
+    - file://./config/retriever
+
+defaults:
+  - gpu_env: default
+  - retriever: none
+  - override hydra/hydra_logging: none
+  - override hydra/job_logging: console_logging
+  - _self_
+
+model:
+  # model arguments
+  model_tag: "LatentRAG_Qwen2.5-14B"
+  model_class: "LatentRAG"
+  model_name_or_path: "Qwen/Qwen2.5-14B"
+  attn_implementation: "flash_attention_2"
+  use_cache: true
+  use_chat_template: true
+  max_turns: 4
+  max_gen_tokens: 512
+  # projector_type: "linear"
+  # projector_type: "mlp2x_gelu"
+  projector_type: "self_attn"
+  self_thought_projector_type: null # if null, use projector_type
+  self_subquery_projector_type: null # if null, use projector_type
+  projector_path: null
+  self_thought_projector_path: null
+  self_subquery_projector_path: null
+  num_latent_thought_tokens: 8
+  num_latent_subquery_tokens: 8
+  base_model_trainable: true
+  projector_trainable: true
+  self_thought_projector_trainable: true
+  self_subquery_projector_trainable: true
+
+  lora:
+    use_lora: true
+    lora_name_or_path: null
+    lora_r: 16
+    lora_alpha: 64
+    lora_dropout: 0.1
+    lora_target_modules: "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
+    use_rslora: false
+
+data:
+  batch_size: ${gpu_env.data.batch_size}
+  n_bins: 200
+  max_seq_length: 3000
+  min_seq_length: 0
+
+  filter_em_correct: true
+  filter_cover_em_correct: false
+  filter_llm_judge_correct: false
+
+training:
+  seed: 42
+
+  # training arguments
+  bf16: true
+  gradient_checkpointing: true
+  num_train_epochs: 3
+  dataloader_num_workers: 0
+  deepspeed: "deepspeed/ds_zero1_config.json"
+  warmup_steps: 500
+  # max_grad_norm: 1.0
+
+  learning_rate: ${gpu_env.training.learning_rate}
+  gradient_accumulation_steps: ${gpu_env.training.gradient_accumulation_steps}
+  per_device_train_batch_size: ${gpu_env.training.per_device_train_batch_size}
+  per_device_eval_batch_size: ${gpu_env.training.per_device_eval_batch_size}
+  
+  logging_steps: 10
+  # eval_strategy: "epoch"
+  eval_strategy: "steps"
+  eval_steps: 200
+  eval_on_start: true
+
+  # save setting
+  output_dir: "trainer_output"
+  overwrite_output_dir: true
+  # save_strategy: "steps"
+  # save_steps: 10
+  # save_strategy: "no"
+  save_strategy: "best"
+  save_total_limit: 1
+  save_only_model: true
+  # load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+
+  report_to: wandb
+
+custom_training:
+  align_loss: null  # please specify in the training script
+  neg_k: 15
+  temperature: 0.01  # for nce_loss and kl_rank_loss
+  # for mse_nce_loss
+  align_mse_loss_weight: 1.0
+  align_nce_loss_weight: 0.1
+
+  align_loss_weight: 1.0
+  gen_loss_weight: 1.0
+  self_decode_thought_gen_loss_weight: 1.0
+  self_decode_subquery_gen_loss_weight: 1.0
+
+  align_retriever: true
+  decode_thought: true  # if false, only decode subqueries
+  decode_subquery: true
+
+  label_smoothing: 0.0
+
+vllm:
+  use_vllm: ${gpu_env.vllm.use_vllm}

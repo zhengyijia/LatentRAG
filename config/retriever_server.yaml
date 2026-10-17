@@ -1,0 +1,21 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://./config/retriever
+
+defaults:
+  - retriever: none
+  - override hydra/hydra_logging: none
+  - override hydra/job_logging: console_logging
+  - _self_
+
+training:
+  # training arguments
+  bf16: true
+  seed: 42
+
+server:
+  host: "0.0.0.0"
+  port: 8001

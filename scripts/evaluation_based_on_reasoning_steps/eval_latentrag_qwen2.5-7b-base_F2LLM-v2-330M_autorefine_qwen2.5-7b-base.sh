@@ -1,0 +1,89 @@
+#!/bin/bash
+set -e
+
+# print slurm job info
+echo "==============================="
+echo "Slurm job info:"
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node name: $SLURMD_NODENAME"
+echo "Node list: $SLURM_NODELIST"
+echo "Start time: $(date)"
+echo "==============================="
+
+# change to project root directory
+cd ../..
+
+# set up python environment
+source scripts/common_settings.sh
+export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+
+# get number of gpus
+NUM_GPUS=$(python - <<EOF
+import torch
+print(torch.cuda.device_count())
+EOF
+)
+echo "NUM_GPUS: ${NUM_GPUS}"
+
+# get gpu memory info of the first visible gpu device
+MEM_GB=$(python - <<EOF
+import torch
+if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    print(torch.cuda.get_device_properties(0).total_memory // (1024**3))
+else:
+    print(0)
+EOF
+)
+
+# if [ $MEM_GB -lt 60 ]; then
+#     MEM_GB_TIER="40g"
+# elif [ $MEM_GB -lt 90 ]; then
+#     MEM_GB_TIER="64g"
+# else
+#     MEM_GB_TIER="94g"
+# fi
+# echo "MEM_GB: ${MEM_GB}, MEM_GB_TIER: ${MEM_GB_TIER}"
+
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+# set global data path
+if [ -n "$GLOBAL_DATA_PATH" ]; then
+  project_name=$(basename "$(pwd)")
+  GLOBAL_DATA_PATH="$GLOBAL_DATA_PATH/$project_name"
+else
+  GLOBAL_DATA_PATH="$(pwd)"
+fi
+
+REFERENCE_MODEL="AutoRefine_Qwen2.5-7B"
+RETRIEVER="F2LLM-v2-330M"
+
+# EVAL_FILES="['nq/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'triviaqa/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'popqa/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json']"
+# EVAL_FILES="['hotpotqa/dev/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', '2wikimultihopqa/dev/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'musique/dev/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'bamboogle/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json']"
+EVAL_FILES="['nq/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'triviaqa/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'popqa/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'hotpotqa/dev/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', '2wikimultihopqa/dev/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'musique/dev/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json', 'bamboogle/test/${REFERENCE_MODEL}_${RETRIEVER}_maxturns_4_topk_3_negk_15_reasoning_steps.json']"
+
+# LORA_PATH="$(pwd)/trainer_output/LatentRAG_Qwen2.5-7B_F2LLM-v2-330M_AutoRefine_Qwen2.5-7B/20260505_004837_lr0.0001_bs16_ep5_lora_r16_dp0.1_kl_rank_loss_temp0.1_ls0.0_self_attn_encoder_trainable_thought_tokens4_subquery_tokens16_no_mse_loss/20260505_004837_alw1.0_glw1.0_sdtw1.0_sdsw1.0_mlw10.0_nlw1.0_decode_subquery_decode_thought"
+LORA_PATH="$(pwd)/trainer_output/LatentRAG_Qwen2.5-7B_F2LLM-v2-330M_AutoRefine_Qwen2.5-7B"
+
+BATCH_LATENT_DECODING=false # set to true to enable latent thought and subquery decoding
+
+python src/evaluate_based_on_reasoning_steps.py \
+  --config-path $LORA_PATH \
+  --config-name training_config \
+  hydra.run.dir=. hydra.output_subdir=null \
+  "data.data_path='$GLOBAL_DATA_PATH/data/reasoning_steps'" \
+  data.eval_files="$EVAL_FILES" \
+  +data.save_path="$LORA_PATH/evaluation_based_on_reasoning_steps_output" \
+  "model.lora.lora_name_or_path='$LORA_PATH'" \
+  "model.projector_path='$LORA_PATH'" \
+  "model.self_thought_projector_path='$LORA_PATH'" \
+  "model.self_subquery_projector_path='$LORA_PATH'" \
+  "retriever.custom_encoder_name_or_path='${LORA_PATH}/encoder'" \
+  "retriever.encoder_lora.lora_name_or_path='${LORA_PATH}/encoder'" \
+  "retriever.corpus_path='$GLOBAL_DATA_PATH/data/corpus'" \
+  data.batch_size=1 \
+  training.overwrite_output_dir=false \
+  +batch_subquery_decoding=$BATCH_LATENT_DECODING \
+  data.filter_em_correct=false \
+  data.filter_llm_judge_correct=false \
+  "+retriever.base_url='http://localhost:8010'"
+#   +data.sampling=1000
