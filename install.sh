@@ -1,4 +1,3 @@
-conda install -c conda-forge MKL==2024.2.2
 pip3 install vllm==0.17.1
 pip install transformers==4.57.6
 pip install mteb==2.10.12
