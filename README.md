@@ -1,13 +1,12 @@
 <!-- # LatentRAG: Latent Reasoning and Retrieval for Efficient Agentic RAG -->
 
 <h1 align="center">
-  <a href="https://github.com/zhengyijia/LatentRAG", 
-  title="The blue-to-green gradient represents the continuous latent thought tokens (blue) and latent subquery tokens (green) in the LatentRAG framework.">
+  <picture title="The blue-to-green gradient represents the continuous latent thought tokens (blue) and latent subquery tokens (green) in the LatentRAG framework.">
   <img src="assets/title.svg"
        alt="LatentRAG"
        height="32em"
        align="absmiddle" 
-  /></a>: Latent Reasoning and Retrieval for Efficient Agentic RAG
+  /></picture>: Latent Reasoning and Retrieval for Efficient Agentic RAG
 </h1>
 
 <p align="center">
@@ -27,7 +26,11 @@
 This repo provides the official implementation for the NeurIPS 2026 paper "[LatentRAG: Latent Reasoning and Retrieval for Efficient Agentic RAG](https://arxiv.org/abs/2605.06285)". LatentRAG is an efficient agentic RAG framework that shifts both reasoning and retrieval from discrete language space to continuous latent space, enabling end-to-end joint optimization of the LLM and the retrieval model while reducing overall latency by approximately 90%.
 
 <p align="center">
-  <img src="assets/performance_efficiency_comparison.png" width="90%" alt="Comparison of performance and latency on multi-hop QA datasets." title="LatentRAG achieves comparable performance to competitive agentic RAG methods such as Search-R1 and AutoRefine, while maintaining efficiency on par with naive single-step RAG." />
+  <picture>
+  <img src="assets/performance_efficiency_comparison.png" width="100%" alt="Performance and latency comparison on multi-hop QA datasets." title="LatentRAG achieves comparable performance to competitive agentic RAG methods such as Search-R1 and AutoRefine, while maintaining efficiency on par with naive single-step RAG." />
+  </picture>
+  <br />
+  <sub><span style="color: #888888;">Performance and latency comparison across multi-hop QA datasets. LatentRAG achieves comparable performance to competitive agentic RAG methods such as Search-R1 and AutoRefine, while maintaining efficiency on par with naive single-step RAG.</span></sub>
 </p>
 
 ## Environment Setup
