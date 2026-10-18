@@ -117,7 +117,7 @@ huggingface-cli download zhengyijia142/SearchR1_AutoRefine_reasoning_steps_qwen3
     --local-dir data/reasoning_steps
 ```
 
-### (5) Training Model
+### (5) Train LatentRAG
 
 The training code has been tested on two H100 GPUs, each with 94 GB of memory. For other hardware configurations, please modify `GPU_ENV_CONFIG` in the training script and add the corresponding configuration file under `config/gpu_env/latentrag_qwen2.5-7b-base_qwen3-embedding-0.6b` to ensure proper adaptation to GPU memory constraints.
 
@@ -139,7 +139,7 @@ bash train_latentrag_qwen2.5-7b-base_qwen3-embedding-0.6b_autorefine_qwen2.5-7b-
 
 The trained model weights will be stored in `trainer_output`.
 
-### (6) Evaluation
+### (6) Evaluate LatentRAG
 
 ### Evaluation using your saved model weights
 
