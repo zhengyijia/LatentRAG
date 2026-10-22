@@ -23,7 +23,15 @@
 
 ## Overview
 
-This repo provides the official implementation for the NeurIPS 2026 paper "[LatentRAG: Latent Reasoning and Retrieval for Efficient Agentic RAG](https://arxiv.org/abs/2605.06285)". LatentRAG is an efficient agentic RAG framework that shifts both reasoning and retrieval from discrete language space to continuous latent space, enabling end-to-end joint optimization of the LLM and the retrieval model while reducing overall latency by approximately 90%.
+This repository contains the official implementation of our NeurIPS 2026 paper: [LatentRAG: Latent Reasoning and Retrieval for Efficient Agentic RAG](https://arxiv.org/abs/2605.06285). LatentRAG is an efficient agentic RAG framework that shifts both reasoning and retrieval from discrete language space to continuous latent space, enabling end-to-end joint optimization of the LLM and the retrieval model while reducing overall latency by approximately 90%.
+
+### A simple and quick introduction to LatentRAG
+
+> People naturally use words to search for information, but does an AI agent need to do the same?
+
+In existing agentic RAG systems, an AI agent searches for information multiple times before answering a complex question. Each time, it must express its reasoning in text and turn its search intent into a text query. Generating text one token at a time makes this process slow, much like humans have to type out their queries word-by-word before searching online. AI agents and search systems both work with latent representations other than words, making it possible for AI agents to search without first converting their internal representations into words.
+
+LatentRAG explores this idea by moving both reasoning and retrieval from discrete language space to continuous latent space. Instead of generating text queries, the agent directly produces continuous latent representations and passes them to the retriever to search for relevant information. This latent reasoning and retrieval mechanism not only offers significant efficiency advantage, but also enables end-to-end differentiable joint optimization of the LLM and the retriever. Our experiments on seven benchmark datasets show that LatentRAG achieves performance comparable to existing agentic RAG methods while reducing inference latency by approximately 90%, substantially narrowing the latency gap with naive single-step RAG.
 
 <p align="center">
   <picture>
